@@ -1,0 +1,12 @@
+name: flavor-bible
+title: flavor-bible
+username:
+account: areeves87
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 297530
+bundleId: 1375970
+url: https://areeves87.shinyapps.io/flavor-bible/
+when: 1526432635.12892
+asMultiple: FALSE
+asStatic: FALSE
