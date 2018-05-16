@@ -6,3 +6,4 @@ Code and report for my flavor bible shiny app
 *  The data folder contains the flavor bible pdf that I text mined
 *  The report folder contains the code for my rmarkdown report of the project
     + You can access the report [here](http://rpubs.com/areeves87/389547)
+*  The images folder contains images used in the report
