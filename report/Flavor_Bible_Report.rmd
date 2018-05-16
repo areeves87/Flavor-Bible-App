@@ -1,0 +1,359 @@
+---
+title: "Flavor Bible Web Reference"
+author: "13ass13ass"
+date: "May 10, 2018"
+output:
+  html_document: default
+---
+
+I built a [web app](https://areeves87.shinyapps.io/flavor-bible/) as a project for my resume. It summarizes content from [The Flavor Bible](https://www.amazon.com/Flavor-Bible-Essential-Creativity-Imaginative/dp/0316118400), a book about how to embellish recipes or even make your own. With my app you can search ingredients and get back a list of matching tastes. My wife and I have found it very helpful when looking for unconventional ingredient options. Below, I'll explain the motivation for the app and the step by step process for building it. If you'd prefer to view just the code without reading the blog post, you can check out the [github page](https://github.com/areeves87/Flavor-Bible-App) for the project.
+
+#Motivation for Building the Web App
+
+![**We're going to mine this book's data**](book_cover.png)
+
+When I first heard about The Flavor Bible, I knew I wanted to check it out. It's a kitchen reference for developing your own recipes. If you've ever tried making your own recipe, you know how hit or miss it can be.
+
+The authors suggest that developing your own recipes or departing from existing recipes provides an “opportunity to be immersed in one’s senses and in the moment like no other activity, uniting the inner and outer selves.  At these times, cooking transcends drudgery and becomes a means of meditation and even healing.” And as new-agey as that sounds, it had me intrigued!
+
+So I pawned off some healing crystals I had lying around and ordered the book. When it arrived the next day, I opened it up and flipped through the pages. It was list after list of flavors and their suggested pairs. Nearly 800 pages of it! To be honest, the Flavor Bible overwhelmed me. I didn't know how to begin.
+
+After my initial shock, my next reaction was to Google for instructions. Soon enough I found the book website where the authors listed some of their top-tips, one of which in particular stood out to me. Apparently, the authors think the best technique for using the book is to sequentially add flavors to a recipe as long as they pair with what's already been added. Here's a quick [youtube video](https://www.youtube.com/watch?v=XvhjbYXDdu4) that they linked outlining the procedure. 
+
+Well, I tried doing what the video said and it was freaking tedious. It's easy to come up with new flavors when you already know what things pair well, but it's tough to do when you're a relative beginner like me and have to flip through the book each new flavor. If this was really the best way to use the book, then I figured I was better off using my data science skills to automate the procedure. My plan was to find a digital copy of the book so that I could mine its text data and create an easy-to-use web app that would automatically generate good flavor pairs based on my search terms. 
+
+#Finding a digital copy
+
+The structure of the book looked easy to parse. The meat of the book -- so to speak -- was the flavor pairings. Each pair consisted of a heading and a flavor right below the heading. It was almost like a list of named character vectors. I could already imagine how I'd structure the data set. The only problem was that my computer couldn't access any of that information yet.
+
+I needed an electronic version of the book. I decided to download a PDF copy since I'm somewhat familiar with text extraction from PDFs. I found a few versions of the Flavor Bible online (I won't link directly but they all came from LibGen) and downloaded the first PDF version listed. The quality was not good for OCR. There were issues with text getting cut off, some of the words weren't being captured, there were multiple columns per page... it was clearly going to be a hassle to get the job done.
+
+
+![**First version - warped page and multiple columns**](example_flavor_match.png)
+
+
+So before I proceeded any further with this version of the book, I downloaded the epub version of the book from the site. Boy was I glad I did! The text was single column AND it was natively electronic -- so no issues with OCR. This was going to be much easier to grab the data from. Lesson learned: don't settle for messy data too quickly. 
+
+![**Second version - much easier to parse**](epub_example.png)
+
+(NB: I converted the epub file to PDF right away since I had already spent some time getting comfortable with text extraction from PDF by that point. In hindsight this may have been a hasty decision but I try not to let perfect be the enemy of good when it comes to finishing projects.)
+
+#Extracting the relevant pages
+
+Now that I had a digital copy of the book, my plan was to extract the relevant pages and then extract all the flavors and headings from those pages. Sounds simple, right?
+
+I used the tidyverse for the text manipulation library "stringr". And I used the "tm" library for extracting the content from the book.
+
+```{r, message=FALSE}
+library(tidyverse)
+library(tm)
+```
+
+All it took was writing two lines of code with the tm library to extract all the text. The first line generates a function for reading in the data by using `tm::readPDF` with the "-layout" parameter specified to preserve formatting. It turns out that there is important information encoded in the amount of whitespace before each flavor entry, so it is going to help us later on if we can retain it now. The second line specifies the PDF and the newly-generated `read` function to load the data into a Corpus, which is the main structure for managing documents in tm. Because there's only one PDF, the corpus only contains one document.
+
+```{r}
+read <- readPDF(control = list(text = "-layout"))
+document <- Corpus(URISource("./Flavor-Bible-epub.pdf"), 
+                   readerControl = list(reader = read))
+```
+
+Running `str` on the corpus lists the single document. Nested within the document are two elements: the content of the book and its metadata.
+
+```{r}
+str(document)
+```
+
+I wanted transform the corpus into structure that closely approximates the physical layout of the text in the book. I figured that would make it easier to think about how to find the relevant pages.
+
+This transformation was straightforward in practice. I extracted the content from the document with `NLP::content` and then called `base::strsplit` on the result, splitting the content into sub strings every time there's an `\r\n`, which is just the newline character in windows.
+
+```{r}
+doc <- content(document[[1]])
+doc2 <- strsplit(doc, "\r\n")
+```
+
+That gave me a data set that resembles the physical copy of the book since each element of "doc2" corresponded to a page and each nested element corresponded to a line on that page.
+
+Looking through the PDF, the flavor matching charts began on page 42.
+
+![**The first heading is on page 42**](first_heading.png)
+
+Correspondingly, the matching charts begin on list element 42, line 16 in the "doc2" data. The flavor headings are listed in alphabetical order, so it makes sense that the first entry is "ACHIOTE SEEDS."
+
+```{r}
+doc2[[42]][16] #first line of the flavor matching charts
+```
+
+Using a similar strategy, I found the last page of the flavor pairings: page 811, which is list element 811 in "doc2". 
+
+#Extracting the headings and flavors
+
+Now that I had all the relevant pages, I transformed the data again. Since I wanted to classify each line as either a "heading", "flavor", or "ignore", I transformed the list into a data frame. That way I could leverage the `tidyverse` for munging the data on a line-by-line basis.
+
+```{r}
+#assign all rows of text beginning with first flavor chart
+line_of_text <- doc2[42:811] %>% unlist()
+page_num <- sapply(42:811, function(x) rep(x, length(doc2[[x]]))) %>% unlist()
+
+df_new <- data_frame(page = page_num, text = line_of_text)       
+
+df_new <- df_new[-c(1:15),] #get rid of first 15 lines on page 42
+```
+
+I develop some heuristics for classifying each line of text as a heading, pairing, or something I should ignore. The book's editor uses a consistent set of rules for the formatting, so the classification task is a matter of codifying the rules the editor used into an algorithm that tags each line. Easy to say, not always so easy to do. If the heuristics become too difficult to specify explicitly, that would be a good reason to consider machine learning algorithms. However, I never resorted to ML in this project -- simple heuristics were enough.
+
+#Feature engineering: a first pass
+
+Looking at the first few rows of our data frame, there are obvious exploitable differences in formatting between the heading "ACHIOTE SEEDS" and the pairing suggestions "   beef", etc. For one, the heading is in all caps. For two, there is an indent preceding the pairing suggestions, whereas there is no leading whitespace for the headings. See for yourself:
+```{r}
+head(df_new)
+```
+These observations suggest the following rules for classifying each row in the data frame:
+
+1. If it's all caps with no indent, call it a "heading"
+2. If it **is** indented, call it a "flavor"
+3. If it isn't a flavor or a heading, "ignore" it
+
+We can express these rules in the form of logical tests that are checked against each row in the data frame. We'll use a combination of the `stringr::str_detect` function, regular expressions, and the `dplyr::mutate` function to create new columns that report the result of the test for each row.
+
+```{r}
+df_new <- df_new %>% 
+          mutate(#first make columns detect uppercase and indenting
+                 all_caps = !str_detect(text, pattern = "[[:lower:]]{1}"),
+                 indent = str_detect(text, pattern = "^[[:space:]]{1,}"),
+                 #then classify based on uppercase and indenting
+                 heading = all_caps & !indent,
+                 flavor = indent,
+                 ignore = !heading & !flavor)
+
+head(df_new)
+```
+
+Note that `ignore = !heading & !flavor` is essentially saying `ignore = !all_caps & !indent`. Okay now let's see how many of each category we have using `base::summary`:
+
+```{r}
+summary(df_new[,c("heading", "flavor", "ignore")])
+```
+
+About 1k headings, 20k flavors, and 9k ignores. If you pay attention closely you can see that the total false rows for each column add up to the total true rows for the other two columns combined. That's because the classifications are **mutually-exclusive** -- each line of text can only be one of "heading", "flavor", or "ignore". Another, more explicit, way to verify that our algorithm is capturing this feature is to use `base::table` to count the number of time a row is true for two categories at once.
+
+```{r}
+#check independence of classes
+table(df_new[,c("heading","flavor")])
+table(df_new[,c("heading","ignore")])
+table(df_new[,c("flavor","ignore")])
+```
+
+Just as we anticipated, there is no overlap between the three categories. In other words, the intersection of any two pairs is zero. 
+
+However, mutually exclusive categories don't imply perfect separation. In fact, my rules merely performed *okay* at the task. Misclassifications were abundant. Since I didn't have a test data set to monitor the accuracy of my algorithm, I had to sample each class and verify *by eye* whether there were any misclassifications. I used any misclassified rows to help me identify failures in my simple algorithm and refine the rules for separation.
+
+#Feature engineering: round two - fight!
+
+I began with the "ignore" class, since a misclassification here meant that I lost some all-important heading and/or flavor data.
+
+**Issue #1:**   `ignore = !all_caps & !indent` misclassifies headings with parenthetical comments in lowercase.
+
+```{r}
+#see the first three rows
+df_new %>% filter(ignore == TRUE) %>% select(text) %>% head()
+```
+
+This result suggests that if we relax our rule to check for uppercase in just the first word instead of for the entire line, we will increase our sensitivity towards true headings.
+
+**Issue #2:**  `ignore = !all_caps & !indent` misclassifies flavors that don't have an indent.
+```{r}
+#see rows 9 and 10
+df_new %>% filter(ignore == TRUE) %>% select(text) %>% head(10)
+```
+
+Looks like we lose the indent on our flavors for some reason. Upon closer inspection, it happens any time there's no headings on a given page. This suggests that we should flag pages with no indents and assume that none of the lines on that page contain headings.
+
+```{r}
+indents <- tapply(df_new$indent, df_new$page, sum)
+hist(indents,
+     xlab = "total indents on page",
+     ylab = "number of pages",
+     main = "Indents Per Page", 
+     col = "purple")
+```
+
+143/770 of the pages have no indents. That's nearly 20%. These pages can account for many of the flavors misclassified as ignorable. So if we can flag all the pages with 0 or 1 indent, we can shift our rules around to extract more flavors into our database. But we'll have to be cautious about how much noise that introduces into our flavor class.
+
+**Issue #3:**  Including flavors without an indent increases flavor recall at the cost of flavor precision. This only becomes an issue once we try relaxing our rules to solve issues #1 and #2. Concretely, there are many pages with zero indents that contain a combination of flavors and quotes. I noticed that the quotes frequently begin with the little used "em dash" or "—" character, which is slightly wider than a hyphen. 
+
+```{r}
+df_new %>% filter(str_detect(text, pattern = "^[-–—]")) %>% select(text) %>% head() 
+```
+
+So it looks like we can get back some of the precision in our flavor classification if we flag leading dashes in each line of text.
+
+**Issue #4:**  The final issue I noted was that when I relaxed the rules on capitalization and indentation, I ended up with a bunch of rows with sentences misclassified as flavors. After a little thinking, I decided we should use the following heuristic for classifying sentences: sentences contain pronouns, flavors don't. 
+
+An example of a sentence is:
+```{r}
+df_new$text[177]
+```
+
+Note the use of the pronoun "I." Flagging lines containing pronouns should help us retrieve most of the precision we lost in our flavor classification.
+
+However, after all my corrections, the heuristics have become complex. In my opinion, they are still possible to reason with, but only just barely. Any more complex and I should've considered machine learning approaches. 
+
+We won't be performing ML in this blog post, so let's go ahead and rewrite the rules based on our corrections:
+
+1.  Check for uppercase in just the first word
+2.  Flag all the pages with less than two indents
+3.  Detect the presence of leading dashes
+4.  Detect whether the line of text contains pronouns
+
+```{r}
+pronouns <- c(" I | YOU | WE | THEY | THEIR | MY | OUR ")
+
+df_new <- df_new[,1:2] %>% 
+          mutate(#detect uppercase, indenting, leading dashes, pronouns
+                 caps = str_detect(text, pattern = "^[[:upper:]]{3,}"),
+                 indent = str_detect(text, pattern = "^[[:space:]]{1,}"),
+                 dashes = str_trim(text,"left") %>%
+                           str_detect(., pattern = "^[-–—]"),
+                 sentence = str_detect(text %>% toupper(), pronouns)) %>% 
+          group_by(page) %>% 
+          #label pages with fewer than two indents total
+          mutate(few_indents = sum(indent) < 2) %>% 
+          ungroup %>% 
+          mutate(#then write the new rules for each class
+                 heading = caps & !few_indents & !dashes & !indent,
+                 flavor = ifelse(few_indents, 
+                                 !dashes & !sentence, 
+                                 indent & !sentence & !dashes),
+                 ignore = !heading & !flavor)
+```
+
+The logic is a little complicated to follow. Let's convince ourselves we know what it's saying. The gist is that each line gets classified as either "heading", "flavor", or "ignore" based on the presence of 5 features. 
+
+Headings are when...
+
+*  the first three letters of the string are uppercase
+*  the whole page has less than 2 indents
+*  there is no leading dash
+*  there is no indent
+
+Flavors are when...
+
+*  Either there are < 2 indents on the page and
+    + no leading dashes
+    + no pronouns
+*  Or there are >= 2 indents page and 
+    + an indent 
+    + no dashes 
+    + no pronouns
+        
+And we ignore anything that isn't a heading or flavor.
+
+Let's check to make sure that we still have mutual independence between our classes.
+
+```{r}
+summary(df_new[,c("heading", "flavor", "ignore")])
+```
+
+#Building the Flavor Bible database
+
+Okay now we are going to make a database for our web app. One last data transformation before moving on to the app development. We want two columns of data in long form, the first column is the heading and the second column is the flavor pair for that heading. To get there, let's perform the following steps:
+
+*  remove all the rows where "ignore" is TRUE.
+*  make a vector of all the headings
+*  refer to the headings with `cumsum` of the logical vector `df2_new$heading`
+*  make a vector of all the text (minus ignored rows) and trim whitespace
+*  combine the headings vector and the text vector, minus any headings
+
+```{r}
+df2_new <- df_new[!df_new$ignore,]
+
+headings_vec <- df2_new$text[df2_new$heading] #collect headings for ref
+
+headings <- headings_vec[cumsum(df2_new$heading)] #refer with cumsum
+
+df2_new$text <- str_trim(df2_new$text, "both")
+
+df3_new <- data.frame(main = headings, pairing = df2_new$text)[df2_new$text != headings,]
+```
+
+#Building the Flavor Bible web app
+
+I decided early on that I wanted to automate the process of iteratively including ingredients that pair well together. As of now that automation happens with the function `match_up`. It accepts a vector of headings as input, builds a list where each element contains the flavors for that heading, and then uses the `base::Reduce` function to find the overlapping flavors across all heading-flavor vectors. I was excited to get this working, but in practice I've found that the flavor suggestions become quite lame when looking at even just three headings at once. C'est la vie.
+
+The `shiny::shinyApp` function builds our app object and has two main arguments: "ui" and "server". Although I could embed the Shiny App inside this document, I'll instead remind you that I've already built the app and that you can access it [here](https://areeves87.shinyapps.io/flavor-bible/). The code below just gives you some insight into how the app works. 
+
+```{r eval=FALSE}
+library(shiny)
+library(tidyverse)
+
+match_up <- function(flavors){
+                
+                results <- list()
+                
+                for(i in 1:length(flavors)){
+                        
+                        results[[i]] <- bible %>% 
+                                filter(main == flavors[i]) %>% 
+                                pull(pairing)
+                }
+                
+                reduce(results, intersect)
+}
+
+bible <- df3_new
+
+shinyApp(
+        ui <- fluidPage(
+                titlePanel("Flavor Bible Suggestions"),
+                sidebarLayout(
+                        sidebarPanel(selectInput("flavorInput", 
+                                                 "Input Flavor(s)",
+                                                 choices = levels(bible$main),
+                                                 selected = "ACHIOTE SEEDS",
+                                                 multiple = TRUE
+                                                 )
+                                     ),
+                        mainPanel(tableOutput("results"))
+                )
+        ),
+        server <- function(input, output) {
+                
+                output$results <- renderTable({
+                        if (all(input$flavorInput == "")) {
+                        "Matches shown here."
+                        } else {
+                        filtered <- match_up(input$flavorInput)
+                        filtered
+                        }
+                })
+        }
+)
+```
+
+#Conclusions and future directions
+
+I hope this report has given you some insight into my thought process. It's been a fun project and I'm proud to say I genuinely prefer this format to the physical copy of the book, especially since I can access the app on my smart phone. My wife and I recently cooked up a vanilla fish recipe that we would've never tried had we not gotten the suggestion from the app. I encourage you to give it a shot the next time you are cooking at home.
+
+In the future, it will be interesting to try other methods for combining headings. The strict inclusion of only overlapping flavors quickly retrieves rather boring suggestions for flavors. It might be more inspiring to simply list all of the flavors that the headings retrieve.
+
+It would also be good to include the bolded text that the book uses to denote flavor importance. There aren't yet any good tools for extracting local font information, but I've [opened an issue](https://github.com/ropensci/pdftools/issues/29) on the pdftools github to perhaps include this feature in the future.
+
+Late in the project I discovered tools for extracting text and font information from epub files directly without having to convert them to pdf. This is a possibly faster way to include text bolding information and could be a good exercise in text mining.
+
+Well, that's it. If you have any thoughts or reactions to this post, feel free to hit me up at [my github page for this project](https://github.com/areeves87/Flavor-Bible-App)
+
+
+
+
+Thanks for reading!
+
+
+
+
+
+
+
+
+
+
