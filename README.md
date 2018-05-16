@@ -7,3 +7,4 @@ Code and report for my flavor bible shiny app
 *  The report folder contains the code for my rmarkdown report of the project
     + You can access the report [here](http://rpubs.com/areeves87/389547)
 *  The images folder contains images used in the report
+*  The scripts folder contains the code I used for extracting and transforming the text
